@@ -131,7 +131,7 @@ func (fs *FuseFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.
 }
 
 // Rename is used by mv operations (move, rename)
-func (fs *FuseFs) Rename(oldName string, newName string, context *fuse.Context) (code fuse.Status) {
+func (fs *FuseFs) Rename(oldName string, newName string, context *fuse.Context) fuse.Status {
 	oldName, newName = leadingSlash(oldName), leadingSlash(newName)
 	logger.Trace(oldName, "->", newName)
 
@@ -200,7 +200,7 @@ func (fs *FuseFs) Rename(oldName string, newName string, context *fuse.Context) 
 }
 
 // Chown currently does nothing - it is not a valid option, since fuse is single-user anyways
-func (fs *FuseFs) Chown(name string, uid uint32, gid uint32, context *fuse.Context) (code fuse.Status) {
+func (fs *FuseFs) Chown(name string, uid uint32, gid uint32, context *fuse.Context) fuse.Status {
 	return fuse.ENOSYS
 }
 
@@ -293,7 +293,7 @@ func (fs *FuseFs) Rmdir(name string, context *fuse.Context) fuse.Status {
 }
 
 // Open populates a DriveItem's Data field with actual data
-func (fs *FuseFs) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
+func (fs *FuseFs) Open(name string, flags uint32, context *fuse.Context) (nodefs.File, fuse.Status) {
 	name = leadingSlash(name)
 	logger.Trace(name)
 
@@ -318,7 +318,7 @@ func (fs *FuseFs) Open(name string, flags uint32, context *fuse.Context) (file n
 }
 
 // Create a new local file. The server doesn't have this yet.
-func (fs *FuseFs) Create(name string, flags uint32, mode uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
+func (fs *FuseFs) Create(name string, flags uint32, mode uint32, context *fuse.Context) (nodefs.File, fuse.Status) {
 	name = leadingSlash(name)
 	logger.Trace(name)
 
@@ -339,7 +339,7 @@ func (fs *FuseFs) Create(name string, flags uint32, mode uint32, context *fuse.C
 }
 
 // Unlink deletes a file
-func (fs *FuseFs) Unlink(name string, context *fuse.Context) (code fuse.Status) {
+func (fs *FuseFs) Unlink(name string, context *fuse.Context) fuse.Status {
 	name = leadingSlash(name)
 	logger.Trace(name)
 
