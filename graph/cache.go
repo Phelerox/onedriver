@@ -5,7 +5,6 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jstaf/onedriver/logger"
@@ -67,6 +66,7 @@ func (c *Cache) GetID(key string) *DriveItem {
 		data := b.Get([]byte(key))
 		if data != nil {
 			json.Unmarshal(data, item)
+			item.cache = c
 		}
 		return nil
 	})
@@ -142,13 +142,11 @@ func (c *Cache) GetChildrenID(id string, auth *Auth) (map[string]*DriveItem, err
 	}
 	json.Unmarshal(body, &fetched)
 
-	item.mutex.Lock()
 	item.children = make([]string, 0)
 	for _, child := range fetched.Children {
-		// initialize item and store in cache
-		child.mutex = &sync.RWMutex{}
-		// we will always have an id after fetching from the server
-		c.InsertID(child.IDInternal, child)
+		// Initialize item and store in cache. Note that we will always have an id
+		// after fetching from the server
+		c.InsertID(child.ID(), child)
 
 		// store in result map
 		children[strings.ToLower(child.Name())] = child
@@ -159,8 +157,6 @@ func (c *Cache) GetChildrenID(id string, auth *Auth) (map[string]*DriveItem, err
 			item.subdir++
 		}
 	}
-	item.mutex.Unlock()
-
 	return children, nil
 }
 
@@ -171,7 +167,6 @@ func (c *Cache) GetChildrenPath(path string, auth *Auth) (map[string]*DriveItem,
 	if err != nil {
 		return make(map[string]*DriveItem), err
 	}
-
 	return c.GetChildrenID(item.ID(), auth)
 }
 
@@ -210,15 +205,11 @@ func (c *Cache) GetPath(path string, auth *Auth) (*DriveItem, error) {
 
 // addToParent adds an object as a child of a parent
 func (c *Cache) setParent(item *DriveItem, parent *DriveItem) {
-	parent.mutex.Lock()
 	if item.IsDir() {
 		parent.subdir++
 	}
-	item.mutex.Lock()
 	parent.children = append(parent.children, item.IDInternal)
 	item.Parent.ID = parent.IDInternal
-	parent.mutex.Unlock()
-	item.mutex.Unlock()
 }
 
 // removeParent removes a given item from its parent
@@ -226,7 +217,6 @@ func (c *Cache) removeParent(item *DriveItem) {
 	if item != nil { // item can be nil in some scenarios
 		id := item.ID()
 		parent := c.GetID(item.Parent.ID)
-		parent.mutex.Lock()
 		for i, childID := range parent.children {
 			if childID == id {
 				parent.children = append(parent.children[:i], parent.children[i+1:]...)
@@ -236,7 +226,6 @@ func (c *Cache) removeParent(item *DriveItem) {
 		if item.IsDir() {
 			parent.subdir--
 		}
-		parent.mutex.Unlock()
 	}
 }
 
@@ -277,19 +266,15 @@ func (c *Cache) MoveID(oldID string, newID string) error {
 
 	// need to rename the child under the parent
 	parent := c.GetID(item.Parent.ID)
-	parent.mutex.Lock()
 	for i, child := range parent.children {
 		if child == oldID {
 			parent.children[i] = newID
 			break
 		}
 	}
-	parent.mutex.Unlock()
 
-	item.mutex.Lock()
+	// rename actual item and move it in the cache
 	item.IDInternal = newID
-	item.mutex.Unlock()
-
 	c.InsertID(newID, item)
 	c.DeleteID(oldID)
 	return nil

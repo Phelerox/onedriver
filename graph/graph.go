@@ -7,7 +7,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"sync"
 
 	"github.com/jstaf/onedriver/logger"
 )
@@ -113,12 +112,7 @@ func ChildrenPathID(id string) string {
 // root item.
 func GetItem(path string, auth *Auth) (*DriveItem, error) {
 	body, err := Get(ResourcePath(path), auth)
-	item := &DriveItem{
-		mutex: &sync.RWMutex{},
-	}
-	if err != nil {
-		return item, err
-	}
+	var item *DriveItem
 	err = json.Unmarshal(body, item)
 	return item, err
 }

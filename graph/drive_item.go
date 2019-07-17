@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/hanwen/go-fuse/fuse"
@@ -40,9 +39,8 @@ type Deleted struct {
 // DriveItem represents a file or folder fetched from the Graph API. All struct
 // fields are pointers so as to avoid including them when marshaling to JSON
 // if not present. Fields named "xxxxxInternal" should never be accessed, they
-// are there for JSON umarshaling/marshaling only. (They are not safe to access
-// concurrently.) This struct's methods are thread-safe and can be called
-// concurrently.
+// are there for JSON umarshaling/marshaling only. This struct's methods are NOT
+// thread-safe.
 type DriveItem struct {
 	nodefs.File      `json:"-"`
 	cache            *Cache
@@ -57,11 +55,10 @@ type DriveItem struct {
 	Parent           *DriveItemParent `json:"parentReference,omitempty"`
 	children         []string         // a slice of ids, nil when uninitialized
 	subdir           uint32           // used purely by NLink()
-	mutex            *sync.RWMutex
-	Folder           *Folder  `json:"folder,omitempty"`
-	FileInternal     *File    `json:"file,omitempty"`
-	Deleted          *Deleted `json:"deleted,omitempty"`
-	ConflictBehavior string   `json:"@microsoft.graph.conflictBehavior,omitempty"`
+	Folder           *Folder          `json:"folder,omitempty"`
+	FileInternal     *File            `json:"file,omitempty"`
+	Deleted          *Deleted         `json:"deleted,omitempty"`
+	ConflictBehavior string           `json:"@microsoft.graph.conflictBehavior,omitempty"`
 }
 
 // NewDriveItem initializes a new DriveItem
@@ -69,11 +66,9 @@ func NewDriveItem(name string, mode uint32, parent *DriveItem) *DriveItem {
 	itemParent := &DriveItemParent{ID: "", Path: ""}
 	var cache *Cache
 	if parent != nil {
-		parent.mutex.RLock()
 		itemParent.ID = parent.IDInternal
 		itemParent.Path = parent.Path()
 		cache = parent.cache
-		defer parent.mutex.RUnlock()
 	}
 
 	var empty []byte
@@ -85,7 +80,6 @@ func NewDriveItem(name string, mode uint32, parent *DriveItem) *DriveItem {
 		cache:           cache, //TODO: find a way to do uploads without this field
 		Parent:          itemParent,
 		children:        make([]string, 0),
-		mutex:           &sync.RWMutex{},
 		data:            &empty,
 		ModTimeInternal: &currentTime,
 		mode:            mode,
@@ -99,16 +93,12 @@ func (d DriveItem) String() string {
 
 // Name is used to ensure thread-safe access to the NameInternal field.
 func (d DriveItem) Name() string {
-	d.mutex.RLock()
-	d.mutex.RUnlock()
 	return d.NameInternal
 }
 
 // SetName sets the name of the item in a thread-safe manner.
 func (d *DriveItem) SetName(name string) {
-	d.mutex.Lock()
 	d.NameInternal = name
-	d.mutex.Unlock()
 }
 
 var charset = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
@@ -131,8 +121,6 @@ func isLocalID(id string) bool {
 
 // ID returns the internal ID of the item
 func (d *DriveItem) ID() string {
-	d.mutex.RLock()
-	defer d.mutex.RUnlock()
 	return d.IDInternal
 }
 
@@ -143,20 +131,14 @@ func (d *DriveItem) ID() string {
 // an ID (such as when deleting an item that is only local).
 //TODO: move this to cache methods, it's not needed here
 func (d *DriveItem) RemoteID(auth *Auth) (string, error) {
-	// copy the item so we can access it's ID without locking the item later
-	d.mutex.RLock()
-	cpy := *d
-	parentID := d.Parent.ID
-	d.mutex.RUnlock()
-
-	if cpy.IsDir() {
-		//TODO add checks for directory, perhaps retry the dir creation again
-		//server-side?
-		return cpy.IDInternal, nil
+	if d.IsDir() {
+		// Due to the nature of how they are created, directories will always
+		// have an ID.
+		return d.IDInternal, nil
 	}
 
-	if isLocalID(cpy.IDInternal) && auth.AccessToken != "" {
-		uploadPath := fmt.Sprintf("/me/drive/items/%s:/%s:/content", parentID, cpy.Name())
+	if isLocalID(d.IDInternal) && auth.AccessToken != "" {
+		uploadPath := fmt.Sprintf("/me/drive/items/%s:/%s:/content", d.Parent.ID, d.Name())
 		resp, err := Put(uploadPath, auth, strings.NewReader(""))
 		if err != nil {
 			if strings.Contains(err.Error(), "nameAlreadyExists") {
@@ -164,39 +146,35 @@ func (d *DriveItem) RemoteID(auth *Auth) (string, error) {
 				// Check both our local copy and the server.
 
 				// Do we have it (from another thread)?
-				d.mutex.RLock()
-				id := d.IDInternal
-				path := d.Path()
-				if id != "" {
-					defer d.mutex.RUnlock()
-					return id, nil
+				item, _ := d.cache.GetPath(d.Path(), &Auth{})
+				if !isLocalID(item.ID()) {
+					return item.ID(), nil
 				}
-				d.mutex.RUnlock()
 
 				// Does the server have it?
-				latest, err := GetItem(path, auth)
+				latest, err := GetItem(d.Path(), auth)
 				if err == nil {
 					// hooray!
-					err := d.cache.MoveID(cpy.IDInternal, latest.IDInternal)
+					err := d.cache.MoveID(d.IDInternal, latest.IDInternal)
 					return latest.IDInternal, err
 				}
 			}
 			// failed to obtain an ID, return whatever it was beforehand
-			return cpy.IDInternal, err
+			return d.IDInternal, err
 		}
 
 		// we use a new DriveItem to unmarshal things into or it will fuck
 		// with the existing object (namely its size)
-		unsafe := NewDriveItem(cpy.Name(), 0644, nil)
+		unsafe := NewDriveItem(d.Name(), 0644, nil)
 		err = json.Unmarshal(resp, unsafe)
 		if err != nil {
-			return cpy.IDInternal, err
+			return d.IDInternal, err
 		}
 		// this is all we really wanted from this transaction
-		err = d.cache.MoveID(cpy.IDInternal, unsafe.IDInternal)
+		err = d.cache.MoveID(d.IDInternal, unsafe.IDInternal)
 		return unsafe.IDInternal, err
 	}
-	return cpy.IDInternal, nil
+	return d.IDInternal, nil
 }
 
 // Path returns an item's full Path
@@ -302,9 +280,8 @@ func (d DriveItem) GetAttr(out *fuse.Attr) fuse.Status {
 // Utimens sets the access/modify times of a file
 func (d *DriveItem) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
 	logger.Trace(d.Path())
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
 	d.ModTimeInternal = mtime
+	d.cache.InsertID(d.ID(), d)
 	return fuse.OK
 }
 
@@ -340,13 +317,12 @@ func (d DriveItem) Mode() uint32 {
 // Chmod changes the mode of a file
 func (d *DriveItem) Chmod(perms uint32) fuse.Status {
 	logger.Trace(d.Path())
-	d.mutex.Lock()
 	if d.IsDir() {
 		d.mode = fuse.S_IFDIR | perms
 	} else {
 		d.mode = fuse.S_IFREG | perms
 	}
-	d.mutex.Unlock()
+	d.cache.InsertID(d.ID(), d)
 	return fuse.OK
 }
 
@@ -360,8 +336,6 @@ func (d DriveItem) ModTime() uint64 {
 // directory)
 func (d DriveItem) NLink() uint32 {
 	if d.IsDir() {
-		d.mutex.RLock()
-		defer d.mutex.RUnlock()
 		// we precompute d.subdir due to mutex lock contention with NLink and
 		// other ops. d.subdir is modified by cache Insert/Delete and GetChildren.
 		return 2 + d.subdir
@@ -375,7 +349,5 @@ func (d DriveItem) Size() uint64 {
 	if d.IsDir() {
 		return 4096
 	}
-	d.mutex.RLock()
-	defer d.mutex.RUnlock()
 	return d.SizeInternal
 }

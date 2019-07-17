@@ -206,14 +206,14 @@ func (fs *FuseFs) Chown(name string, uid uint32, gid uint32, context *fuse.Conte
 
 // Chmod changes mode purely for convenience/compatibility - it has no effect on
 // server contents (onedrive has no notion of permissions).
-func (fs *FuseFs) Chmod(name string, mode uint32, context *fuse.Context) (code fuse.Status) {
+func (fs *FuseFs) Chmod(name string, mode uint32, context *fuse.Context) fuse.Status {
 	name = leadingSlash(name)
 	item, _ := fs.items.GetPath(name, fs.Auth)
 	return item.Chmod(mode)
 }
 
 // OpenDir returns a list of directory entries
-func (fs *FuseFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry, code fuse.Status) {
+func (fs *FuseFs) OpenDir(name string, context *fuse.Context) ([]fuse.DirEntry, fuse.Status) {
 	name = leadingSlash(name)
 	logger.Trace(name)
 
@@ -225,17 +225,17 @@ func (fs *FuseFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry
 		return nil, fuse.EREMOTEIO
 	}
 
+	entries := make([]fuse.DirEntry, 0)
 	for _, child := range children {
-		child.mutex.RLock() //TODO eliminate need for lock here
+		// mutex lock is unnecessary now that GetChildrenPath fetches a fresh
+		// copy held by no one else
 		entry := fuse.DirEntry{
 			Name: child.Name(),
 			Mode: child.Mode(),
 		}
-		child.mutex.RUnlock()
-		c = append(c, entry)
+		entries = append(entries, entry)
 	}
-
-	return c, fuse.OK
+	return entries, fuse.OK
 }
 
 // Mkdir creates a directory, mode is ignored
@@ -335,7 +335,6 @@ func (fs *FuseFs) Create(name string, flags uint32, mode uint32, context *fuse.C
 	if err != nil {
 		logger.Error(err)
 	}
-
 	return item, fuse.OK
 }
 
@@ -359,7 +358,6 @@ func (fs *FuseFs) Unlink(name string, context *fuse.Context) (code fuse.Status) 
 			return fuse.EREMOTEIO
 		}
 	}
-
 	fs.items.DeletePath(name)
 
 	return fuse.OK
