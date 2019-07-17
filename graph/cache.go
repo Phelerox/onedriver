@@ -9,13 +9,15 @@ import (
 	"time"
 
 	"github.com/jstaf/onedriver/logger"
+	bolt "go.etcd.io/bbolt"
 )
 
 // Cache caches DriveItems for a filesystem. This cache never expires so
 // that local changes can persist. Should be created using the NewCache()
 // constructor.
 type Cache struct {
-	metadata  sync.Map
+	*bolt.DB
+	metadata  []byte // boltdb bucket name for filesystem metadata
 	root      string // the id of the filesystem's root item
 	auth      *Auth
 	deltaLink string
@@ -23,10 +25,23 @@ type Cache struct {
 
 // NewCache creates a new Cache
 func NewCache(auth *Auth) *Cache {
-	cache := &Cache{
-		auth: auth,
+	// initialize the boltdb instance used internally
+	boltdb, err := bolt.Open("onedriver.db", 0600, &bolt.Options{Timeout: 1 * time.Second})
+	if err != nil {
+		logger.Fatal(err)
 	}
+	cache := &Cache{
+		DB:       boltdb,
+		metadata: []byte("metadata"),
+		auth:     auth,
+	}
+	// create buckets
+	cache.DB.Update(func(tx *bolt.Tx) error {
+		tx.CreateBucketIfNotExists(cache.metadata)
+		return nil
+	})
 
+	// add the root item to the cache
 	root, err := GetItem("/", auth)
 	if err != nil {
 		logger.Fatal("Could not fetch root item of filesystem!:", err)
@@ -43,25 +58,36 @@ func NewCache(auth *Auth) *Cache {
 	return cache
 }
 
-// GetID gets an item from the cache by ID. No fetching is performed. Result is
-// nil if no item is found.
-func (c *Cache) GetID(id string) *DriveItem {
-	entry, exists := c.metadata.Load(id)
-	if !exists {
+// GetID creates a DriveItem from the database. No fetching/network stuff is
+// performed, unlike Get().
+func (c *Cache) GetID(key string) *DriveItem {
+	var item *DriveItem
+	c.DB.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(c.metadata)
+		data := b.Get([]byte(key))
+		if data != nil {
+			json.Unmarshal(data, item)
+		}
 		return nil
-	}
-	item := entry.(*DriveItem)
+	})
 	return item
 }
 
-// InsertID inserts a single item into the cache by ID
-func (c *Cache) InsertID(id string, item *DriveItem) {
-	c.metadata.Store(id, item)
+// InsertID stores a DriveItem into the db
+func (c *Cache) InsertID(key string, item *DriveItem) error {
+	return c.DB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(c.metadata)
+		data, _ := json.Marshal(item)
+		return b.Put([]byte(key), data)
+	})
 }
 
-// DeleteID deletes an item from the cache
-func (c *Cache) DeleteID(id string) {
-	c.metadata.Delete(id)
+// DeleteID purges a DriveItem from the db
+func (c *Cache) DeleteID(key string) {
+	c.DB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(c.metadata)
+		return b.Delete([]byte(key))
+	})
 }
 
 // only used for parsing
@@ -122,7 +148,7 @@ func (c *Cache) GetChildrenID(id string, auth *Auth) (map[string]*DriveItem, err
 		// initialize item and store in cache
 		child.mutex = &sync.RWMutex{}
 		// we will always have an id after fetching from the server
-		c.metadata.Store(child.IDInternal, child)
+		c.InsertID(child.IDInternal, child)
 
 		// store in result map
 		children[strings.ToLower(child.Name())] = child
@@ -223,7 +249,7 @@ func (c *Cache) Delete(key string) {
 	if err != nil {
 		c.removeParent(item)
 	}
-	c.metadata.Delete(item.ID())
+	c.DeleteID(item.ID())
 }
 
 // Insert lets us manually insert an item to the cache (like if it was created
@@ -238,7 +264,7 @@ func (c *Cache) Insert(key string, auth *Auth, item *DriveItem) error {
 	}
 
 	c.setParent(item, parent)
-	c.metadata.Store(item.ID(), item)
+	c.InsertID(item.ID(), item)
 	return nil
 }
 
