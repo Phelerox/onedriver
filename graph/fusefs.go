@@ -116,7 +116,7 @@ func (fs *FuseFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.
 		return nil, fuse.ENOENT
 	}
 
-	item, err := fs.items.Get(name, fs.Auth)
+	item, err := fs.items.GetPath(name, fs.Auth)
 	if err != nil || item == nil {
 		// this is where non-existent files are caught - called before any other
 		// method when accessing a file
@@ -136,7 +136,7 @@ func (fs *FuseFs) Rename(oldName string, newName string, context *fuse.Context) 
 	logger.Trace(oldName, "->", newName)
 
 	// grab item being renamed
-	item, _ := fs.items.Get(oldName, fs.Auth)
+	item, _ := fs.items.GetPath(oldName, fs.Auth)
 	id, err := item.RemoteID(fs.Auth)
 	if isLocalID(id) || err != nil {
 		// uploads will fail without an id
@@ -149,7 +149,7 @@ func (fs *FuseFs) Rename(oldName string, newName string, context *fuse.Context) 
 
 	if newDir := filepath.Dir(newName); filepath.Dir(oldName) != newDir {
 		// we are moving the item, add the new parent ID to the patch
-		newParent, err := fs.items.Get(newDir, fs.Auth)
+		newParent, err := fs.items.GetPath(newDir, fs.Auth)
 		if err != nil {
 			logger.Errorf("Failed to fetch \"%s\": %s\n", newDir, err)
 			return fuse.EREMOTEIO
@@ -192,7 +192,7 @@ func (fs *FuseFs) Rename(oldName string, newName string, context *fuse.Context) 
 	}
 
 	// now rename local copy
-	if err := fs.items.Move(oldName, newName, fs.Auth); err != nil {
+	if err := fs.items.MovePath(oldName, newName, fs.Auth); err != nil {
 		logger.Error("Failed to rename local item:", err)
 		return fuse.EIO
 	}
@@ -208,7 +208,7 @@ func (fs *FuseFs) Chown(name string, uid uint32, gid uint32, context *fuse.Conte
 // server contents (onedrive has no notion of permissions).
 func (fs *FuseFs) Chmod(name string, mode uint32, context *fuse.Context) (code fuse.Status) {
 	name = leadingSlash(name)
-	item, _ := fs.items.Get(name, fs.Auth)
+	item, _ := fs.items.GetPath(name, fs.Auth)
 	return item.Chmod(mode)
 }
 
@@ -287,7 +287,7 @@ func (fs *FuseFs) Rmdir(name string, context *fuse.Context) fuse.Status {
 		return fuse.EREMOTEIO
 	}
 
-	fs.items.Delete(name)
+	fs.items.DeletePath(name)
 
 	return fuse.OK
 }
@@ -297,7 +297,7 @@ func (fs *FuseFs) Open(name string, flags uint32, context *fuse.Context) (file n
 	name = leadingSlash(name)
 	logger.Trace(name)
 
-	item, err := fs.items.Get(name, fs.Auth)
+	item, err := fs.items.GetPath(name, fs.Auth)
 	if err != nil {
 		// We know the file exists, GetAttr() has already been called
 		logger.Error("Error while getting item", err)
@@ -323,7 +323,7 @@ func (fs *FuseFs) Create(name string, flags uint32, mode uint32, context *fuse.C
 	logger.Trace(name)
 
 	// fetch details about the new item's parent (need the ID from the remote)
-	parent, err := fs.items.Get(filepath.Dir(name), fs.Auth)
+	parent, err := fs.items.GetPath(filepath.Dir(name), fs.Auth)
 	if err != nil {
 		logger.Error("Error while fetching parent:", err)
 		return nil, fuse.EREMOTEIO
@@ -331,7 +331,7 @@ func (fs *FuseFs) Create(name string, flags uint32, mode uint32, context *fuse.C
 
 	item := NewDriveItem(filepath.Base(name), mode, parent)
 	logger.Tracef("Created \"%s\" as \"%s\"", name, item.ID())
-	err = fs.items.Insert(name, fs.Auth, item)
+	err = fs.items.InsertPath(name, fs.Auth, item)
 	if err != nil {
 		logger.Error(err)
 	}
@@ -344,7 +344,7 @@ func (fs *FuseFs) Unlink(name string, context *fuse.Context) (code fuse.Status) 
 	name = leadingSlash(name)
 	logger.Trace(name)
 
-	item, err := fs.items.Get(name, fs.Auth)
+	item, err := fs.items.GetPath(name, fs.Auth)
 	// allow safely calling Unlink on items that don't actually exist
 	if err != nil && strings.Contains(err.Error(), "does not exist") {
 		return fuse.ENOENT
@@ -360,7 +360,7 @@ func (fs *FuseFs) Unlink(name string, context *fuse.Context) (code fuse.Status) 
 		}
 	}
 
-	fs.items.Delete(name)
+	fs.items.DeletePath(name)
 
 	return fuse.OK
 }

@@ -167,7 +167,7 @@ func (c *Cache) GetChildrenID(id string, auth *Auth) (map[string]*DriveItem, err
 // GetChildrenPath grabs all DriveItems that are the children of the resource at
 // the path. If items are not found, they are fetched.
 func (c *Cache) GetChildrenPath(path string, auth *Auth) (map[string]*DriveItem, error) {
-	item, err := c.Get(path, auth)
+	item, err := c.GetPath(path, auth)
 	if err != nil {
 		return make(map[string]*DriveItem), err
 	}
@@ -175,9 +175,9 @@ func (c *Cache) GetChildrenPath(path string, auth *Auth) (map[string]*DriveItem,
 	return c.GetChildrenID(item.ID(), auth)
 }
 
-// Get fetches a given DriveItem in the cache, if any items along the way are
-// not found, they are fetched.
-func (c *Cache) Get(path string, auth *Auth) (*DriveItem, error) {
+// GetPath fetches a given DriveItem in the cache for the given fileystem path,
+// if any items along the way are not found, they are fetched.
+func (c *Cache) GetPath(path string, auth *Auth) (*DriveItem, error) {
 	lastID := c.root
 	if path == "/" {
 		return c.GetID(lastID), nil
@@ -240,23 +240,23 @@ func (c *Cache) removeParent(item *DriveItem) {
 	}
 }
 
-// Delete an item from the cache by path
-func (c *Cache) Delete(key string) {
+// DeletePath an item from the cache by path
+func (c *Cache) DeletePath(key string) {
 	key = strings.ToLower(key)
 	// Uses empty auth, since we actually don't want to waste time fetching
 	// items that are only being fetched so they can be deleted.
-	item, err := c.Get(key, &Auth{})
+	item, err := c.GetPath(key, &Auth{})
 	if err != nil {
 		c.removeParent(item)
 	}
 	c.DeleteID(item.ID())
 }
 
-// Insert lets us manually insert an item to the cache (like if it was created
-// locally). Overwrites a cached item if present.
-func (c *Cache) Insert(key string, auth *Auth, item *DriveItem) error {
+// InsertPath lets us manually insert an item to the cache (like if it was
+// created locally). Overwrites a cached item if present.
+func (c *Cache) InsertPath(key string, auth *Auth, item *DriveItem) error {
 	key = strings.ToLower(key)
-	parent, err := c.Get(filepath.Dir(key), auth)
+	parent, err := c.GetPath(filepath.Dir(key), auth)
 	if err != nil {
 		return err
 	} else if parent == nil {
@@ -295,17 +295,17 @@ func (c *Cache) MoveID(oldID string, newID string) error {
 	return nil
 }
 
-// Move an item to a new position
-func (c *Cache) Move(oldPath string, newPath string, auth *Auth) error {
-	item, err := c.Get(oldPath, auth)
+// MovePath an item to a new position
+func (c *Cache) MovePath(oldPath string, newPath string, auth *Auth) error {
+	item, err := c.GetPath(oldPath, auth)
 	if err != nil {
 		return err
 	}
 
-	c.Delete(oldPath)
-	if err = c.Insert(newPath, auth, item); err != nil {
+	c.DeletePath(oldPath)
+	if err = c.InsertPath(newPath, auth, item); err != nil {
 		// insert failed, reinsert in old location
-		c.Insert(oldPath, auth, item)
+		c.InsertPath(oldPath, auth, item)
 		return err
 	}
 	return nil
