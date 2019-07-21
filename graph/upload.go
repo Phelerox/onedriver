@@ -73,24 +73,22 @@ func (d *DriveItem) createUploadSession(auth *Auth) (*UploadSession, error) {
 		return nil, err
 	}
 	snapshot := make([]byte, session.Size)
-	copy(snapshot, *d.data)
+	copy(snapshot, d.content.data)
 	session.data = &snapshot
-	d.mutex.Lock()
+	d.content.Lock()
 	d.uploadSession = &session
-	d.mutex.Unlock()
+	d.content.Unlock()
 	return &session, nil
 }
 
 // cancel the upload session by deleting the temp file at the endpoint and
 // clearing the singleton field in the DriveItem
 func (d *DriveItem) cancelUploadSession(auth *Auth) {
-	d.mutex.Lock()
 	if d.uploadSession != nil {
 		// dont care about result, this is purely us being polite to the server
 		go Delete(d.uploadSession.UploadURL, auth)
 	}
 	d.uploadSession = nil
-	d.mutex.Unlock()
 }
 
 // Internal method used for uploading individual chunks of a DriveItem. We have
@@ -144,8 +142,8 @@ func (d *DriveItem) Upload(auth *Auth) error {
 		// size is small enough that we can use a single PUT request
 		id, err := d.RemoteID(auth)
 		if err != nil || isLocalID(id) {
-			d.mutex.Lock()
-			defer d.mutex.Unlock()
+			d.content.Lock()
+			defer d.content.Unlock()
 			logger.Errorf("Could not obtain ID for upload of %s, error: %s\n", d.Name(), err)
 			d.hasChanges = true
 			return err
@@ -153,17 +151,17 @@ func (d *DriveItem) Upload(auth *Auth) error {
 
 		// creating a snapshot prevents lock contention during the actual http
 		// upload
-		d.mutex.RLock()
+		d.content.RLock()
 		logger.Trace("Using simple upload for", d.Name())
 		snapshot := make([]byte, size)
-		copy(snapshot, *d.data)
-		d.mutex.RUnlock()
+		copy(snapshot, d.content.data)
+		d.content.RUnlock()
 
 		resp, err := Put("/me/drive/items/"+id+"/content", auth,
 			bytes.NewReader(snapshot))
 
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
+		d.content.Lock()
+		defer d.content.Unlock()
 		if err != nil {
 			d.hasChanges = true
 			return err

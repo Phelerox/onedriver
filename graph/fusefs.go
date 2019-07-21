@@ -305,13 +305,11 @@ func (fs *FuseFs) Open(name string, flags uint32, context *fuse.Context) (nodefs
 	}
 
 	// check for if file has already been populated
-	if item.data == nil {
+	if item.content == nil {
 		// it is unpopulated, grab from api
-		logger.Info("Fetching remote content for", item.Name())
-		err = item.FetchContent(fs.Auth)
 		if err != nil {
 			logger.Errorf("Failed to fetch content for '%s': %s\n", item.ID(), err)
-			return nil, fuse.EREMOTEIO
+			return nil, fuse.EIO
 		}
 	}
 	return item, fuse.OK

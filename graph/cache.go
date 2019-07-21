@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jstaf/onedriver/logger"
@@ -16,10 +17,12 @@ import (
 // constructor.
 type Cache struct {
 	*bolt.DB
-	metadata  []byte // boltdb bucket name for filesystem metadata
-	root      string // the id of the filesystem's root item
-	auth      *Auth
-	deltaLink string
+	metadata      []byte   // boltdb bucket name for filesystem metadata
+	content       []byte   // boltdb bucket name for inactive file content (as bytes)
+	activeContent sync.Map // live content for currently open files
+	root          string   // the id of the filesystem's root item
+	auth          *Auth
+	deltaLink     string
 }
 
 // NewCache creates a new Cache
@@ -87,6 +90,96 @@ func (c *Cache) DeleteID(key string) {
 	c.DB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(c.metadata)
 		return b.Delete([]byte(key))
+	})
+}
+
+// GetContentID fetches content from either the server, memory, or the
+// file-backed cache
+func (c *Cache) GetContentID(key string, auth *Auth) (*DriveItemContent, error) {
+	// do we have it in the memory-backed cache?
+	val, exists := c.activeContent.Load(key)
+	if exists {
+		return val.(*DriveItemContent), nil
+	}
+
+	// do we have it on disk?
+	found := false
+	var content *DriveItemContent
+	c.DB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(c.content)
+		byteData := b.Get([]byte(key))
+		if byteData != nil {
+			found = true
+			// must create copy, otherwise data is toast as soon as tx finishes
+			cp := make([]byte, len(byteData))
+			copy(cp, byteData)
+			content = NewDriveItemContent(cp)
+		}
+		return nil
+	})
+	if found {
+		c.InsertContentID(key, content)
+		return content, nil
+	}
+
+	// do we have it on the server?
+	item := c.GetID(key)
+	if item == nil {
+		// item not found locally
+		return nil, errors.New("Metadata for item \"%s\" not found in cache")
+	}
+	id, err := item.RemoteID(auth)
+	if err != nil {
+		// error while swapping ids
+		logger.Error("Could not obtain ID:", err.Error())
+		return nil, err
+	}
+	logger.Info("Fetching remote content for", item.Name())
+	body, err := Get("/me/drive/items/"+id+"/content", auth)
+	if err != nil {
+		// something went wrong with our get request
+		return nil, err
+	}
+	// if we made it here, we got it from the server
+	content = NewDriveItemContent(body)
+	c.InsertContentID(key, content)
+	return content, nil
+}
+
+// InsertContentID inserts content into the memory-backed cache, but not the db
+func (c *Cache) InsertContentID(key string, content *DriveItemContent) {
+	c.activeContent.Store(key, content)
+}
+
+// FlushContentID removes content from the memory-backed cache, and flushes it
+// to disk. If flush is called on a file that is not in memory, it will be
+// reloaded from disk and written to disk again. Flush is typically called when
+// a file descriptor is closed. This is responsible for triggering uploads of
+// file contents.
+func (c *Cache) FlushContentID(key string) {
+	content, err := c.GetContentID(key, nil)
+	if err != nil {
+		return
+	}
+
+	// add item to disk
+	c.DB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(c.content)
+		b.Put([]byte(key), content.data)
+		return nil
+	})
+
+	// flush item from memory
+	c.activeContent.Delete(key)
+}
+
+// DeleteContentID deletes all content from the local computer
+func (c *Cache) DeleteContentID(key string) {
+	c.activeContent.Delete(key)
+	c.DB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(c.content)
+		b.Delete([]byte(key))
+		return nil
 	})
 }
 

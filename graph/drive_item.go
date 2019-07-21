@@ -44,21 +44,21 @@ type Deleted struct {
 type DriveItem struct {
 	nodefs.File      `json:"-"`
 	cache            *Cache
-	uploadSession    *UploadSession   // current upload session, or nil
-	data             *[]byte          // empty by default
-	hasChanges       bool             // used to trigger an upload on flush
-	IDInternal       string           `json:"id,omitempty"`
-	NameInternal     string           `json:"name,omitempty"`
-	SizeInternal     uint64           `json:"size,omitempty"`
-	ModTimeInternal  *time.Time       `json:"lastModifiedDatetime,omitempty"`
-	mode             uint32           // do not set manually
-	Parent           *DriveItemParent `json:"parentReference,omitempty"`
-	children         []string         // a slice of ids, nil when uninitialized
-	subdir           uint32           // used purely by NLink()
-	Folder           *Folder          `json:"folder,omitempty"`
-	FileInternal     *File            `json:"file,omitempty"`
-	Deleted          *Deleted         `json:"deleted,omitempty"`
-	ConflictBehavior string           `json:"@microsoft.graph.conflictBehavior,omitempty"`
+	content          *DriveItemContent `json:"-"` // actual file contents
+	uploadSession    *UploadSession    // current upload session, or nil
+	hasChanges       bool              // used to trigger an upload on flush
+	IDInternal       string            `json:"id,omitempty"`
+	NameInternal     string            `json:"name,omitempty"`
+	SizeInternal     uint64            `json:"size,omitempty"`
+	ModTimeInternal  *time.Time        `json:"lastModifiedDatetime,omitempty"`
+	mode             uint32            // do not set manually
+	Parent           *DriveItemParent  `json:"parentReference,omitempty"`
+	children         []string          // a slice of ids, nil when uninitialized
+	subdir           uint32            // used purely by NLink()
+	Folder           *Folder           `json:"folder,omitempty"`
+	FileInternal     *File             `json:"file,omitempty"`
+	Deleted          *Deleted          `json:"deleted,omitempty"`
+	ConflictBehavior string            `json:"@microsoft.graph.conflictBehavior,omitempty"`
 }
 
 // NewDriveItem initializes a new DriveItem
@@ -71,7 +71,6 @@ func NewDriveItem(name string, mode uint32, parent *DriveItem) *DriveItem {
 		cache = parent.cache
 	}
 
-	var empty []byte
 	currentTime := time.Now()
 	return &DriveItem{
 		File:            nodefs.NewDefaultFile(),
@@ -80,7 +79,6 @@ func NewDriveItem(name string, mode uint32, parent *DriveItem) *DriveItem {
 		cache:           cache, //TODO: find a way to do uploads without this field
 		Parent:          itemParent,
 		children:        make([]string, 0),
-		data:            &empty,
 		ModTimeInternal: &currentTime,
 		mode:            mode,
 	}
@@ -189,78 +187,6 @@ func (d DriveItem) Path() string {
 	return strings.Replace(prepath, "//", "/", -1)
 }
 
-// FetchContent fetches a DriveItem's content and initializes the .Data field.
-func (d *DriveItem) FetchContent(auth *Auth) error {
-	id, err := d.RemoteID(auth)
-	if err != nil {
-		logger.Error("Could not obtain ID:", err.Error())
-		return err
-	}
-	body, err := Get("/me/drive/items/"+id+"/content", auth)
-	if err != nil {
-		return err
-	}
-	d.mutex.Lock()
-	d.data = &body
-	d.File = nodefs.NewDefaultFile()
-	d.mutex.Unlock()
-	return nil
-}
-
-// Read from a DriveItem like a file
-func (d DriveItem) Read(buf []byte, off int64) (fuse.ReadResult, fuse.Status) {
-	end := int(off) + int(len(buf))
-	d.mutex.RLock()
-	defer d.mutex.RUnlock()
-	if end > len(*d.data) {
-		end = len(*d.data)
-	}
-	logger.Tracef("%s: %d bytes at offset %d\n", d.Path(), int64(end)-off, off)
-	return fuse.ReadResultData((*d.data)[off:end]), fuse.OK
-}
-
-// Write to a DriveItem like a file. Note that changes are 100% local until
-// Flush() is called.
-func (d *DriveItem) Write(data []byte, off int64) (uint32, fuse.Status) {
-	nWrite := len(data)
-	offset := int(off)
-	logger.Tracef("%s: %d bytes at offset %d\n", d.Path(), nWrite, off)
-
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
-	if offset+nWrite > int(d.SizeInternal)-1 {
-		// we've exceeded the file size, overwrite via append
-		*d.data = append((*d.data)[:offset], data...)
-	} else {
-		// writing inside the current file, overwrite in place
-		copy((*d.data)[offset:], data)
-	}
-	// probably a better way to do this, but whatever
-	d.SizeInternal = uint64(len(*d.data))
-	d.hasChanges = true
-
-	return uint32(nWrite), fuse.OK
-}
-
-// Flush is called when a file descriptor is closed. This is responsible for all
-// uploads of file contents.
-func (d *DriveItem) Flush() fuse.Status {
-	logger.Trace(d.Path())
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
-	if d.hasChanges {
-		d.hasChanges = false
-		// ensureID() is no longer used here to make upload dispatch even faster
-		// (since upload is using ensureID() internally)
-		if d.cache == nil {
-			logger.Error("Driveitem cache ref cannot be nil!", d.Name())
-			return fuse.ENODATA
-		}
-		go d.Upload(d.cache.auth)
-	}
-	return fuse.OK
-}
-
 // GetAttr returns a the DriveItem as a UNIX stat. Holds the read mutex for all
 // of the "metadata fetch" operations.
 func (d DriveItem) GetAttr(out *fuse.Attr) fuse.Status {
@@ -282,17 +208,6 @@ func (d *DriveItem) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
 	logger.Trace(d.Path())
 	d.ModTimeInternal = mtime
 	d.cache.InsertID(d.ID(), d)
-	return fuse.OK
-}
-
-// Truncate cuts a file in place
-func (d *DriveItem) Truncate(size uint64) fuse.Status {
-	logger.Trace(d.Path())
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
-	*d.data = (*d.data)[:size]
-	d.SizeInternal = size
-	d.hasChanges = true
 	return fuse.OK
 }
 
