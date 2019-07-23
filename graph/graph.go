@@ -112,7 +112,11 @@ func ChildrenPathID(id string) string {
 // root item.
 func GetItem(path string, auth *Auth) (*DriveItem, error) {
 	body, err := Get(ResourcePath(path), auth)
-	var item *DriveItem
-	err = json.Unmarshal(body, item)
-	return item, err
+	if err != nil {
+		return nil, err
+	}
+	var item DriveItem
+	// json.Unmarshal will fail if item is a nil pointer
+	err = json.Unmarshal(body, &item)
+	return &item, err
 }

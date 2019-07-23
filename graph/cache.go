@@ -40,13 +40,14 @@ func NewCache(auth *Auth) *Cache {
 	// create buckets
 	cache.DB.Update(func(tx *bolt.Tx) error {
 		tx.CreateBucketIfNotExists(cache.metadata)
+		tx.CreateBucketIfNotExists(cache.content)
 		return nil
 	})
 
 	// add the root item to the cache
 	root, err := GetItem("/", auth)
 	if err != nil {
-		logger.Fatal("Could not fetch root item of filesystem!:", err)
+		logger.Fatal("Could not fetch root item of filesystem!:", err.Error())
 	}
 	root.cache = cache
 	cache.root = root.ID()
@@ -63,17 +64,17 @@ func NewCache(auth *Auth) *Cache {
 // GetID creates a DriveItem from the database. No fetching/network stuff is
 // performed, unlike Get().
 func (c *Cache) GetID(key string) *DriveItem {
-	var item *DriveItem
+	var item DriveItem
 	c.DB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(c.metadata)
 		data := b.Get([]byte(key))
 		if data != nil {
-			json.Unmarshal(data, item)
+			json.Unmarshal(data, &item)
 			item.cache = c
 		}
 		return nil
 	})
-	return item
+	return &item
 }
 
 // InsertID stores a DriveItem into the db

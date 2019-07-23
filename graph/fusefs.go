@@ -3,6 +3,7 @@ package graph
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -59,6 +60,15 @@ func NewFS() *FuseFs {
 		Auth:       auth,
 		items:      cache,
 	}
+}
+
+// OnUnmount runs when the filesystem is unmounted and performs any required
+// cleanup.
+func (fs *FuseFs) OnUnmount() {
+	// close and delete the boltdb cache
+	//TODO: examine keeping the boltdb cache for later/offline use
+	fs.items.Close()
+	os.Remove("onedriver.db")
 }
 
 // DriveQuota is used to parse the User's current storage quotas from the API

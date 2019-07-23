@@ -6,4 +6,5 @@ mount/
 *.log
 *.fa
 *.gz
+*.db
 onedriver

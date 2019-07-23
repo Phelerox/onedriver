@@ -44,7 +44,7 @@ type Deleted struct {
 type DriveItem struct {
 	nodefs.File      `json:"-"`
 	cache            *Cache
-	content          *DriveItemContent `json:"-"` // actual file contents
+	content          *DriveItemContent // actual file contents
 	uploadSession    *UploadSession    // current upload session, or nil
 	hasChanges       bool              // used to trigger an upload on flush
 	IDInternal       string            `json:"id,omitempty"`
