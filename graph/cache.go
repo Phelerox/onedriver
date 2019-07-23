@@ -17,12 +17,13 @@ import (
 // constructor.
 type Cache struct {
 	*bolt.DB
-	metadata      []byte   // boltdb bucket name for filesystem metadata
-	content       []byte   // boltdb bucket name for inactive file content (as bytes)
-	activeContent sync.Map // live content for currently open files
-	root          string   // the id of the filesystem's root item
-	auth          *Auth
-	deltaLink     string
+	metadataName []byte   // boltdb bucket name for filesystem metadata
+	contentName  []byte   // boltdb bucket name for inactive file content (as bytes)
+	metadata     sync.Map // live file metadata
+	content      sync.Map // live content for currently open files
+	root         string   // the id of the filesystem's root item
+	auth         *Auth
+	deltaLink    string
 }
 
 // NewCache creates a new Cache
@@ -33,14 +34,15 @@ func NewCache(auth *Auth) *Cache {
 		logger.Fatal(err)
 	}
 	cache := &Cache{
-		DB:       boltdb,
-		metadata: []byte("metadata"),
-		auth:     auth,
+		DB:           boltdb,
+		metadataName: []byte("metadata"),
+		contentName:  []byte("content"),
+		auth:         auth,
 	}
 	// create buckets
 	cache.DB.Update(func(tx *bolt.Tx) error {
-		tx.CreateBucketIfNotExists(cache.metadata)
-		tx.CreateBucketIfNotExists(cache.content)
+		tx.CreateBucketIfNotExists(cache.metadataName)
+		tx.CreateBucketIfNotExists(cache.contentName)
 		return nil
 	})
 
@@ -61,44 +63,32 @@ func NewCache(auth *Auth) *Cache {
 	return cache
 }
 
-// GetID creates a DriveItem from the database. No fetching/network stuff is
-// performed, unlike Get().
-func (c *Cache) GetID(key string) *DriveItem {
-	var item DriveItem
-	c.DB.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(c.metadata)
-		data := b.Get([]byte(key))
-		if data != nil {
-			json.Unmarshal(data, &item)
-			item.cache = c
-		}
+// GetID gets an item from the cache by ID. No fetching is performed. Result is
+// nil if no item is found.
+func (c *Cache) GetID(id string) *DriveItem {
+	entry, exists := c.metadata.Load(id)
+	if !exists {
 		return nil
-	})
-	return &item
+	}
+	item := entry.(*DriveItem)
+	return item
 }
 
-// InsertID stores a DriveItem into the db
-func (c *Cache) InsertID(key string, item *DriveItem) error {
-	return c.DB.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(c.metadata)
-		data, _ := json.Marshal(item)
-		return b.Put([]byte(key), data)
-	})
+// InsertID inserts a single item into the cache by ID
+func (c *Cache) InsertID(id string, item *DriveItem) {
+	c.metadata.Store(id, item)
 }
 
-// DeleteID purges a DriveItem from the db
-func (c *Cache) DeleteID(key string) {
-	c.DB.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(c.metadata)
-		return b.Delete([]byte(key))
-	})
+// DeleteID deletes an item from the cache
+func (c *Cache) DeleteID(id string) {
+	c.metadata.Delete(id)
 }
 
 // GetContentID fetches content from either the server, memory, or the
 // file-backed cache
 func (c *Cache) GetContentID(key string, auth *Auth) (*DriveItemContent, error) {
 	// do we have it in the memory-backed cache?
-	val, exists := c.activeContent.Load(key)
+	val, exists := c.content.Load(key)
 	if exists {
 		return val.(*DriveItemContent), nil
 	}
@@ -107,7 +97,7 @@ func (c *Cache) GetContentID(key string, auth *Auth) (*DriveItemContent, error) 
 	found := false
 	var content *DriveItemContent
 	c.DB.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(c.content)
+		b := tx.Bucket(c.contentName)
 		byteData := b.Get([]byte(key))
 		if byteData != nil {
 			found = true
@@ -149,7 +139,7 @@ func (c *Cache) GetContentID(key string, auth *Auth) (*DriveItemContent, error) 
 
 // InsertContentID inserts content into the memory-backed cache, but not the db
 func (c *Cache) InsertContentID(key string, content *DriveItemContent) {
-	c.activeContent.Store(key, content)
+	c.content.Store(key, content)
 }
 
 // FlushContentID removes content from the memory-backed cache, and flushes it
@@ -165,20 +155,20 @@ func (c *Cache) FlushContentID(key string) {
 
 	// add item to disk
 	c.DB.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(c.content)
+		b := tx.Bucket(c.contentName)
 		b.Put([]byte(key), content.data)
 		return nil
 	})
 
 	// flush item from memory
-	c.activeContent.Delete(key)
+	c.content.Delete(key)
 }
 
 // DeleteContentID deletes all content from the local computer
 func (c *Cache) DeleteContentID(key string) {
-	c.activeContent.Delete(key)
+	c.content.Delete(key)
 	c.DB.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(c.content)
+		b := tx.Bucket(c.contentName)
 		b.Delete([]byte(key))
 		return nil
 	})
